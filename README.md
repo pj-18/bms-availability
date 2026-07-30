@@ -26,6 +26,15 @@ and emails you the diff via [`notifier.py`](notifier.py) if anything
 newly has available seats. [`run_scheduler.py`](run_scheduler.py) is the
 process that keeps this looping — see "Why not cron" below.
 
+[`heartbeat.py`](heartbeat.py) tracks whether checks are actually
+*succeeding*, not just running, so a silent failure (BookMyShow changed
+something and every fetch starts erroring) doesn't just look like "no
+shows yet." `run_scheduler.py` emails you three kinds of heartbeat
+messages: one when it starts, an alert if it goes more than
+`STALE_THRESHOLD_SECONDS` (30 min by default) without a single
+successful check, and a "recovered" email once checks start succeeding
+again.
+
 ## Testing before you trust it
 
 There are two layers of testing here — one you can run right now with no
@@ -196,14 +205,60 @@ Either way, once the systemd service is enabled, the checker keeps
 running even if you close your laptop or lose your home internet — it's
 now tied to the cloud VM's uptime, not yours.
 
+## Starting/stopping the VM from GitHub Actions (GCP only)
+
+Once tickets are booked for a show, you'll want to stop paying for/running
+the VM entirely rather than just pausing the checker. Two workflows under
+the repo's **Actions** tab do this with one click each — **only if the VM
+is a GCP instance** (per the free-VM section above):
+
+- **`VM stop`** ([`.github/workflows/vm-stop.yml`](.github/workflows/vm-stop.yml)) — powers the instance off.
+- **`VM start`** ([`.github/workflows/vm-start.yml`](.github/workflows/vm-start.yml)) — powers it back on, waits for it to boot and become SSH-reachable, pulls the latest code from `main`, and (re)starts the `bms-availability` service. This is also how code updates reach the VM — there's no separate deploy-on-merge step; starting the VM always runs whatever is currently on `main`.
+
+**One-time setup on the VM:**
+
+```bash
+sudo cp deploy/sudoers-bms-availability /etc/sudoers.d/bms-availability
+sudo chmod 440 /etc/sudoers.d/bms-availability
+# edit DEPLOY_USER in that file first to match the account the workflow SSHes in as
+```
+
+This lets the deploy step run `sudo systemctl restart bms-availability`
+non-interactively over SSH, without granting broader sudo access.
+
+**One-time setup in GitHub** (repo Settings → Secrets and variables →
+Actions → New repository secret):
+
+| Secret | What it is |
+|---|---|
+| `GCP_SA_KEY` | JSON key for a service account scoped to just start/stop/describe this one instance (not project-wide Compute Admin) |
+| `GCP_PROJECT_ID` | Your GCP project ID |
+| `GCP_ZONE` | The instance's zone, e.g. `us-central1-a` |
+| `GCP_INSTANCE_NAME` | The instance's name |
+| `VM_USERNAME` | SSH username on the VM |
+| `VM_SSH_KEY` | Private half of an SSH key whose public half is on the VM (`~/.ssh/authorized_keys`) |
+| `VM_DEPLOY_PATH` | Path to the repo clone on the VM, e.g. `/home/youruser/bms-availability` |
+
+To trigger either workflow: **Actions tab → "VM stop" or "VM start" → Run
+workflow**. `VM start`'s external IP is re-resolved on every run (GCP
+assigns a new ephemeral IP on each stop/start unless you've reserved a
+static one), so there's no stale-IP secret to keep updated. You'll know
+`VM start` actually worked when the "BMS checker started" heartbeat email
+arrives — the workflow going green only means the SSH commands ran, not
+that the checker is successfully reaching BookMyShow.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `constants.py` | Movie/theatre/city + BMS event/region codes + interval |
+| `constants.py` | Movie/theatre/city + BMS event/region codes + interval + stale threshold |
 | `bms_client.py` | Talks to BookMyShow, parses out shows for the theatre |
 | `notifier.py` | Sends the email |
 | `state.py` | Reads/writes `state.json` (what's already been seen) |
 | `checker.py` | One check pass |
-| `run_scheduler.py` | Keeps `checker.py` running every N seconds |
+| `heartbeat.py` | Tracks success/failure streaks so `run_scheduler.py` knows when to alert |
+| `run_scheduler.py` | Keeps `checker.py` running every N seconds; sends heartbeat emails |
 | `deploy/bms-availability.service` | systemd unit for persistent running |
+| `deploy/sudoers-bms-availability` | Lets the deploy SSH user restart the service passwordlessly |
+| `.github/workflows/vm-start.yml` | Actions-tab button: power on VM, deploy latest `main`, start service |
+| `.github/workflows/vm-stop.yml` | Actions-tab button: power off VM |

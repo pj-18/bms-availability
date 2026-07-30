@@ -12,19 +12,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("bms-checker")
 
 
-def run_once() -> None:
+def run_once() -> bool:
+    """Runs one check pass. Returns True if the fetch from BookMyShow
+    succeeded (regardless of whether anything newly available was found),
+    False if it raised — callers use this to detect the checker silently
+    failing every cycle, as opposed to just "no shows yet"."""
     state = load_state()
 
     try:
         data = fetch_raw_showtimes()
     except Exception:
         log.exception("Failed to fetch showtimes from BookMyShow")
-        return
+        return False
 
     shows = extract_shows_for_theatre(data)
     if not shows:
         log.info("No shows found yet for %s at %s, %s", MOVIE_NAME, THEATRE_NAME, CITY)
-        return
+        return True
 
     newly_available = []
     for show in shows:
@@ -42,7 +46,7 @@ def run_once() -> None:
 
     if not newly_available:
         log.info("Checked %d show(s) for %s, nothing new", len(shows), THEATRE_NAME)
-        return
+        return True
 
     lines = [f"{show.date} {show.show_time} @ {show.venue_name}" for show in newly_available]
     body = (
@@ -51,6 +55,7 @@ def run_once() -> None:
     )
     send_email(f"BMS alert: {MOVIE_NAME} seats available at {THEATRE_NAME}", body)
     log.info("Sent notification for %d newly available show(s)", len(newly_available))
+    return True
 
 
 if __name__ == "__main__":

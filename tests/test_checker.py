@@ -15,7 +15,7 @@ def test_notifies_once_for_a_new_available_show(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "fetch_raw_showtimes", lambda: _show("AVAILABLE"))
     monkeypatch.setattr(checker, "send_email", lambda subject, body: sent.append((subject, body)))
 
-    checker.run_once()
+    assert checker.run_once() is True
     assert len(sent) == 1
 
     checker.run_once()  # nothing changed second time
@@ -46,6 +46,6 @@ def test_fetch_failure_does_not_raise_or_notify(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "fetch_raw_showtimes", boom)
     monkeypatch.setattr(checker, "send_email", lambda subject, body: sent.append((subject, body)))
 
-    checker.run_once()  # must not raise
+    assert checker.run_once() is False  # must not raise
 
     assert sent == []

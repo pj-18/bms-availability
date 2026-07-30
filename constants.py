@@ -20,3 +20,10 @@ REGION_CODE = "TODO_FILL_ME_IN"     # e.g. "CHEN" for Chennai
 
 # --- Scheduling ---------------------------------------------------------
 CHECK_INTERVAL_SECONDS = 5 * 60
+
+# --- Heartbeat / health check --------------------------------------------
+# If run_scheduler.py goes this long without a single *successful* check
+# (fetch raised every cycle, not just "no shows yet"), it emails an alert
+# so a silent failure (e.g. BookMyShow changed its response shape) doesn't
+# go unnoticed just because no "seats available" email ever fires.
+STALE_THRESHOLD_SECONDS = 30 * 60
