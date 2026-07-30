@@ -26,6 +26,42 @@ and emails you the diff via [`notifier.py`](notifier.py) if anything
 newly has available seats. [`run_scheduler.py`](run_scheduler.py) is the
 process that keeps this looping — see "Why not cron" below.
 
+## Testing before you trust it
+
+There are two layers of testing here — one you can run right now with no
+BookMyShow access, one you need real network + real BMS codes for.
+
+**1. Automated tests (no network, no BMS account needed)**
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+`tests/` covers the parsing logic (`bms_client.py` — matching the right
+theatre, reading `Status`, falling back to per-category seat counts) and
+the notification logic (`checker.py` — notifies once on a new available
+show, notifies again if a sold-out show becomes available, stays silent
+on repeat runs, and doesn't crash or notify if the fetch fails) — all
+against mocked BookMyShow responses, so these prove the logic is correct
+without touching the real site or sending a real email.
+
+**2. Real end-to-end check (needs your BMS codes + real internet)**
+
+Automated tests can't catch BookMyShow changing its actual response
+shape, so once `EVENT_CODE`/`REGION_CODE`/email are filled in (steps
+below), run the real things once each:
+
+```bash
+python bms_client.py   # confirms real parsing: should list actual PVR: Palazzo shows
+python checker.py      # one real check + potentially one real email
+```
+
+If `bms_client.py` finds 0 shows, the parsing needs adjusting (see "How
+it works" above) — fix that before relying on it, since a silent parse
+failure just looks like "no shows yet," not an error.
+
 ## Setup
 
 1. **Install dependencies**
