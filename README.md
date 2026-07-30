@@ -113,6 +113,53 @@ journalctl -u bms-availability -f        # follow logs
 To change the check frequency, edit `CHECK_INTERVAL_SECONDS` in
 `constants.py`.
 
+### Don't want to keep your own machine on 24/7?
+
+`run_scheduler.py` only checks while it's running, so if it's on your
+laptop, checks pause whenever the laptop is off, asleep, or offline. If
+you want this running around the clock without babysitting your own
+machine, put it on a free always-on cloud VM instead — both of these have
+an "Always Free" tier (no time limit, no credit card charge as long as
+you stay in the free-tier shape):
+
+**Oracle Cloud (Always Free Ampere VM — most generous free tier)**
+
+1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) (free tier).
+2. Create a Compute instance: Ampere A1, `VM.Standard.A1.Flex`, 1 OCPU /
+   6 GB RAM, Ubuntu image — this shape is free forever under Always Free.
+3. Open port 22 (SSH) in the VM's security list if not already open.
+4. SSH in, then:
+
+   ```bash
+   sudo apt update && sudo apt install -y python3-venv git
+   git clone <your-repo-url>
+   cd bms-availability
+   python3 -m venv venv && source venv/bin/activate
+   pip install -r requirements.txt
+   cp .env.example .env   # fill in SMTP creds + EMAIL_TO
+   nano constants.py      # fill in EVENT_CODE / REGION_CODE
+   ```
+
+5. Install as a systemd service (edit the paths in the unit file first,
+   using your actual clone path and venv's python):
+
+   ```bash
+   sudo cp deploy/bms-availability.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now bms-availability
+   ```
+
+**Google Cloud (`e2-micro` free tier)**
+
+Same steps, but create the VM as `e2-micro` in `us-west1`, `us-central1`,
+or `us-east1` (the regions covered by GCP's Always Free e2-micro
+allowance), Debian/Ubuntu image, then SSH in via `gcloud compute ssh` or
+the browser SSH button and follow the same install steps above.
+
+Either way, once the systemd service is enabled, the checker keeps
+running even if you close your laptop or lose your home internet — it's
+now tied to the cloud VM's uptime, not yours.
+
 ## Files
 
 | File | Purpose |
