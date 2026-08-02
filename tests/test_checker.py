@@ -49,3 +49,11 @@ def test_fetch_failure_does_not_raise_or_notify(tmp_path, monkeypatch):
     assert checker.run_once() is False  # must not raise
 
     assert sent == []
+
+
+def test_cli_exit_code_reflects_success(monkeypatch):
+    monkeypatch.setattr(checker, "run_once", lambda: True)
+    assert checker._cli() == 0
+
+    monkeypatch.setattr(checker, "run_once", lambda: False)
+    assert checker._cli() == 1

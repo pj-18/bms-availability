@@ -1,7 +1,12 @@
 """One check pass: fetch current showtimes, diff against what we saw last
-time, and email if a show is new (or just became available) with seats."""
+time, and email if a show is new (or just became available) with seats.
+
+Runs as a single process invocation — no internal scheduling loop — so it
+fits a GitHub Actions cron job (see .github/workflows/check.yml) where
+each run starts fresh."""
 
 import logging
+import sys
 
 from bms_client import extract_shows_for_theatre, fetch_raw_showtimes
 from constants import CITY, MOVIE_NAME, THEATRE_NAME
@@ -58,5 +63,12 @@ def run_once() -> bool:
     return True
 
 
+def _cli() -> int:
+    """Exit non-zero on a failed fetch so the GitHub Actions run itself
+    shows red — that's what makes GitHub's own workflow-failure
+    notifications useful here instead of a custom heartbeat."""
+    return 0 if run_once() else 1
+
+
 if __name__ == "__main__":
-    run_once()
+    sys.exit(_cli())

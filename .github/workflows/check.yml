@@ -1,0 +1,43 @@
+name: BMS availability check
+
+on:
+  schedule:
+    # Every 5 minutes — the finest granularity GitHub Actions cron allows.
+    # GitHub runs this best-effort and can delay it under load, and
+    # disables scheduled workflows automatically after 60 days with no
+    # repo activity (a push re-enables it).
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      # Each run is a fresh VM, so state.json (what shows have already
+      # been seen) has to be persisted between runs explicitly. Cache
+      # entries unused for 7+ days are auto-evicted by GitHub, so the
+      # trail of old run-id-keyed entries this creates cleans itself up.
+      - name: Restore state.json
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: bms-state-${{ github.run_id }}
+          restore-keys: |
+            bms-state-
+
+      - name: Run check
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python checker.py

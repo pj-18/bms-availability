@@ -2,7 +2,8 @@
 
 Checks BookMyShow every 5 minutes for **The Odyssey** at **PVR: Palazzo,
 Chennai**, and emails you when a new show is added or an existing show
-goes from no seats to seats available.
+goes from no seats to seats available. Runs entirely on GitHub Actions —
+no server or VM of your own required.
 
 The movie, theatre and city are constants in [`constants.py`](constants.py)
 — every other file imports them from there, so tracking a different
@@ -15,30 +16,30 @@ internal showtimes endpoint (the same one their website calls) with a
 generic/fuzzy JSON parser in [`bms_client.py`](bms_client.py) — it walks
 the whole response looking for anything that looks like a venue and a
 showtime, rather than hardcoding one exact field path. If BookMyShow
-changes their response shape, run `python bms_client.py` directly: it
+changes their response shape, run `python bms_client.py` locally: it
 dumps the raw JSON to `raw_showtimes_dump.json` and prints what it
 managed to parse, so you can see what changed and tweak the key lists in
 `bms_client.py`.
 
-Every 5 minutes, [`checker.py`](checker.py) fetches the current shows,
-compares them against [`state.json`](state.py) (created on first run),
-and emails you the diff via [`notifier.py`](notifier.py) if anything
-newly has available seats. [`run_scheduler.py`](run_scheduler.py) is the
-process that keeps this looping — see "Why not cron" below.
+[`checker.py`](checker.py) is a single check pass: fetch the current
+shows, compare them against `state.json` (what's already been seen),
+email via [`notifier.py`](notifier.py) if anything newly has available
+seats, and exit non-zero if the fetch itself failed. There's no
+in-process scheduling loop — [`.github/workflows/check.yml`](.github/workflows/check.yml)
+runs `python checker.py` once every 5 minutes on a GitHub Actions cron
+schedule, and `state.json` is carried between runs via
+[`actions/cache`](https://github.com/actions/cache) since each run
+starts on a fresh VM.
 
-[`heartbeat.py`](heartbeat.py) tracks whether checks are actually
-*succeeding*, not just running, so a silent failure (BookMyShow changed
-something and every fetch starts erroring) doesn't just look like "no
-shows yet." `run_scheduler.py` emails you three kinds of heartbeat
-messages: one when it starts, an alert if it goes more than
-`STALE_THRESHOLD_SECONDS` (30 min by default) without a single
-successful check, and a "recovered" email once checks start succeeding
-again.
+Because `checker.py` exits non-zero on a failed fetch, a failing run
+shows red in the Actions tab — turn on GitHub's own "notify me when a
+workflow fails" setting (see below) instead of a custom alerting
+mechanism.
 
 ## Testing before you trust it
 
-There are two layers of testing here — one you can run right now with no
-BookMyShow access, one you need real network + real BMS codes for.
+Two layers — one you can run right now with no BookMyShow access, one
+you need real network + real BMS codes for.
 
 **1. Automated tests (no network, no BMS account needed)**
 
@@ -52,15 +53,16 @@ pytest -q
 theatre, reading `Status`, falling back to per-category seat counts) and
 the notification logic (`checker.py` — notifies once on a new available
 show, notifies again if a sold-out show becomes available, stays silent
-on repeat runs, and doesn't crash or notify if the fetch fails) — all
-against mocked BookMyShow responses, so these prove the logic is correct
-without touching the real site or sending a real email.
+on repeat runs, doesn't crash or notify if the fetch fails, and exits
+non-zero when it does) — all against mocked BookMyShow responses, so
+these prove the logic is correct without touching the real site or
+sending a real email.
 
 **2. Real end-to-end check (needs your BMS codes + real internet)**
 
 Automated tests can't catch BookMyShow changing its actual response
 shape, so once `EVENT_CODE`/`REGION_CODE`/email are filled in (steps
-below), run the real things once each:
+below), run the real things once each, locally:
 
 ```bash
 python bms_client.py   # confirms real parsing: should list actual PVR: Palazzo shows
@@ -73,15 +75,7 @@ failure just looks like "no shows yet," not an error.
 
 ## Setup
 
-1. **Install dependencies**
-
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-2. **Find `EVENT_CODE` and `REGION_CODE`** (one-time, ~2 minutes)
+1. **Find `EVENT_CODE` and `REGION_CODE`** (one-time, ~2 minutes)
 
    BookMyShow's showtimes API needs its own internal codes, not the movie
    and theatre names. To get them:
@@ -91,174 +85,67 @@ failure just looks like "no shows yet," not an error.
    - Open DevTools → Network tab, filter for `showtimes-by-event`.
    - Click the request and check the query params: copy `eventCode` and
      `regionCode`.
-   - Paste them into `EVENT_CODE` and `REGION_CODE` in `constants.py`.
+   - Paste them into `EVENT_CODE` and `REGION_CODE` in `constants.py`,
+     and push that change to `main` (this is the one piece of config
+     that lives in the repo rather than a secret).
 
-3. **Configure email**
+2. **Get a Gmail App Password** (or other SMTP credentials)
 
-   ```bash
-   cp .env.example .env
-   ```
+   For Gmail: turn on 2-Step Verification, then create a 16-character
+   [App Password](https://myaccount.google.com/apppasswords) — your
+   normal Gmail password won't work for SMTP.
 
-   Fill in `.env` with your SMTP details. For Gmail, `SMTP_USER` is your
-   address and `SMTP_PASSWORD` must be a 16-character
-   [App Password](https://myaccount.google.com/apppasswords) (your normal
-   Gmail password won't work) — the account needs 2-Step Verification
-   turned on to create one. `.env` is git-ignored, so credentials never
-   get committed.
+3. **Add GitHub repo secrets** (Settings → Secrets and variables →
+   Actions → New repository secret):
 
-4. **Sanity-check parsing before trusting it**
+   | Secret | Value |
+   |---|---|
+   | `SMTP_HOST` | e.g. `smtp.gmail.com` |
+   | `SMTP_PORT` | e.g. `587` |
+   | `SMTP_USER` | your email address |
+   | `SMTP_PASSWORD` | the App Password from step 2 |
+   | `EMAIL_TO` | where to send alerts (can be the same as `SMTP_USER`) |
 
-   ```bash
-   python bms_client.py
-   ```
+4. **Turn on GitHub's workflow-failure notifications** — GitHub Settings
+   (your profile, not the repo) → Notifications → under "Actions", set
+   notifications for failed workflows you have access to. This is what
+   tells you if checks start silently failing (e.g. BookMyShow changed
+   something), since `checker.py` exits non-zero in that case.
 
-   This should print the shows it found at PVR: Palazzo along with
-   whether each looks available. If it finds 0 shows, double check
-   `EVENT_CODE`/`REGION_CODE` and the theatre name spelling in
-   `constants.py` against what BookMyShow actually shows for that venue.
+5. **Test it locally first** (steps 4–5 of "Testing before you trust
+   it" above) — sanity-check parsing and a real check pass before
+   relying on the scheduled workflow.
 
-5. **Run one check manually**
+6. **Push to `main`** — once `constants.py` has real `EVENT_CODE`/
+   `REGION_CODE` and the secrets are set, the `BMS availability check`
+   workflow starts running automatically every 5 minutes. You can also
+   trigger it manually any time from the Actions tab (`Run workflow`
+   button — the workflow has `workflow_dispatch` enabled) to test it
+   without waiting for the next tick.
 
-   ```bash
-   python checker.py
-   ```
+## Things to know about the schedule
 
-   This is a single pass — fetch, diff against `state.json`, email if
-   there's anything new. Safe to re-run; it only emails on new/changed
-   availability, not every time.
-
-## Running it every 5 minutes
-
-### Why not cron
-
-Cron (and GitHub Actions' scheduled workflows, which are cron under the
-hood) invoke a fresh process on a wall-clock schedule that the OS/CI
-scheduler owns — under load, GitHub Actions in particular is known to
-delay or skip scheduled runs by several minutes. Instead, `run_scheduler.py`
-**is** the schedule: a single long-running process that sleeps between
-checks itself, so there's no external trigger to be late.
-
-```bash
-python run_scheduler.py
-```
-
-Leave it running in a terminal, `screen`/`tmux` session, or better, as a
-systemd service so it survives reboots and restarts itself if it ever
-crashes:
-
-```bash
-# edit the two paths in deploy/bms-availability.service first
-sudo cp deploy/bms-availability.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bms-availability
-sudo systemctl status bms-availability   # check it's running
-journalctl -u bms-availability -f        # follow logs
-```
-
-To change the check frequency, edit `CHECK_INTERVAL_SECONDS` in
-`constants.py`.
-
-### Don't want to keep your own machine on 24/7?
-
-`run_scheduler.py` only checks while it's running, so if it's on your
-laptop, checks pause whenever the laptop is off, asleep, or offline. If
-you want this running around the clock without babysitting your own
-machine, put it on a free always-on cloud VM instead — both of these have
-an "Always Free" tier (no time limit, no credit card charge as long as
-you stay in the free-tier shape):
-
-**Oracle Cloud (Always Free Ampere VM — most generous free tier)**
-
-1. Sign up at [cloud.oracle.com](https://cloud.oracle.com) (free tier).
-2. Create a Compute instance: Ampere A1, `VM.Standard.A1.Flex`, 1 OCPU /
-   6 GB RAM, Ubuntu image — this shape is free forever under Always Free.
-3. Open port 22 (SSH) in the VM's security list if not already open.
-4. SSH in, then:
-
-   ```bash
-   sudo apt update && sudo apt install -y python3-venv git
-   git clone <your-repo-url>
-   cd bms-availability
-   python3 -m venv venv && source venv/bin/activate
-   pip install -r requirements.txt
-   cp .env.example .env   # fill in SMTP creds + EMAIL_TO
-   nano constants.py      # fill in EVENT_CODE / REGION_CODE
-   ```
-
-5. Install as a systemd service (edit the paths in the unit file first,
-   using your actual clone path and venv's python):
-
-   ```bash
-   sudo cp deploy/bms-availability.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now bms-availability
-   ```
-
-**Google Cloud (`e2-micro` free tier)**
-
-Same steps, but create the VM as `e2-micro` in `us-west1`, `us-central1`,
-or `us-east1` (the regions covered by GCP's Always Free e2-micro
-allowance), Debian/Ubuntu image, then SSH in via `gcloud compute ssh` or
-the browser SSH button and follow the same install steps above.
-
-Either way, once the systemd service is enabled, the checker keeps
-running even if you close your laptop or lose your home internet — it's
-now tied to the cloud VM's uptime, not yours.
-
-## Starting/stopping the VM from GitHub Actions (GCP only)
-
-Once tickets are booked for a show, you'll want to stop paying for/running
-the VM entirely rather than just pausing the checker. Two workflows under
-the repo's **Actions** tab do this with one click each — **only if the VM
-is a GCP instance** (per the free-VM section above):
-
-- **`VM stop`** ([`.github/workflows/vm-stop.yml`](.github/workflows/vm-stop.yml)) — powers the instance off.
-- **`VM start`** ([`.github/workflows/vm-start.yml`](.github/workflows/vm-start.yml)) — powers it back on, waits for it to boot and become SSH-reachable, pulls the latest code from `main`, and (re)starts the `bms-availability` service. This is also how code updates reach the VM — there's no separate deploy-on-merge step; starting the VM always runs whatever is currently on `main`.
-
-**One-time setup on the VM:**
-
-```bash
-sudo cp deploy/sudoers-bms-availability /etc/sudoers.d/bms-availability
-sudo chmod 440 /etc/sudoers.d/bms-availability
-# edit DEPLOY_USER in that file first to match the account the workflow SSHes in as
-```
-
-This lets the deploy step run `sudo systemctl restart bms-availability`
-non-interactively over SSH, without granting broader sudo access.
-
-**One-time setup in GitHub** (repo Settings → Secrets and variables →
-Actions → New repository secret):
-
-| Secret | What it is |
-|---|---|
-| `GCP_SA_KEY` | JSON key for a service account scoped to just start/stop/describe this one instance (not project-wide Compute Admin) |
-| `GCP_PROJECT_ID` | Your GCP project ID |
-| `GCP_ZONE` | The instance's zone, e.g. `us-central1-a` |
-| `GCP_INSTANCE_NAME` | The instance's name |
-| `VM_USERNAME` | SSH username on the VM |
-| `VM_SSH_KEY` | Private half of an SSH key whose public half is on the VM (`~/.ssh/authorized_keys`) |
-| `VM_DEPLOY_PATH` | Path to the repo clone on the VM, e.g. `/home/youruser/bms-availability` |
-
-To trigger either workflow: **Actions tab → "VM stop" or "VM start" → Run
-workflow**. `VM start`'s external IP is re-resolved on every run (GCP
-assigns a new ephemeral IP on each stop/start unless you've reserved a
-static one), so there's no stale-IP secret to keep updated. You'll know
-`VM start` actually worked when the "BMS checker started" heartbeat email
-arrives — the workflow going green only means the SSH commands ran, not
-that the checker is successfully reaching BookMyShow.
+- GitHub Actions cron is best-effort — under load it can delay a
+  scheduled run by several minutes past its `*/5 * * * *` tick. This
+  repo previously used a self-hosted VM specifically to avoid that; it
+  now runs on Actions cron instead, so occasional lateness is an
+  accepted tradeoff for not needing a server.
+- GitHub **automatically disables scheduled workflows** on a repo after
+  60 days with no commits/pushes. A push to `main` (or manually
+  re-enabling it from the Actions tab) turns it back on.
+- To change the check frequency, edit the `cron:` line in
+  `.github/workflows/check.yml`.
+- To pause checks entirely (e.g. once tickets are booked), disable the
+  workflow from the Actions tab (`... → Disable workflow`) — no need to
+  touch a server or delete anything.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `constants.py` | Movie/theatre/city + BMS event/region codes + interval + stale threshold |
+| `constants.py` | Movie/theatre/city + BMS event/region codes |
 | `bms_client.py` | Talks to BookMyShow, parses out shows for the theatre |
 | `notifier.py` | Sends the email |
 | `state.py` | Reads/writes `state.json` (what's already been seen) |
-| `checker.py` | One check pass |
-| `heartbeat.py` | Tracks success/failure streaks so `run_scheduler.py` knows when to alert |
-| `run_scheduler.py` | Keeps `checker.py` running every N seconds; sends heartbeat emails |
-| `deploy/bms-availability.service` | systemd unit for persistent running |
-| `deploy/sudoers-bms-availability` | Lets the deploy SSH user restart the service passwordlessly |
-| `.github/workflows/vm-start.yml` | Actions-tab button: power on VM, deploy latest `main`, start service |
-| `.github/workflows/vm-stop.yml` | Actions-tab button: power off VM |
+| `checker.py` | One check pass; exits non-zero on a failed fetch |
+| `.github/workflows/check.yml` | Runs `checker.py` on a 5-minute cron schedule |
