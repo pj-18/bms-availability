@@ -1,4 +1,4 @@
-from bms_client import extract_shows_for_theatre
+from bms_client import extract_all_shows, extract_shows, extract_shows_for_theatre
 
 
 def test_extracts_shows_for_matching_theatre_only():
@@ -47,6 +47,30 @@ def test_seat_count_fallback_when_no_top_level_status():
     by_time = {s.show_time: s.available for s in shows}
     assert by_time["6:00 PM"] is True
     assert by_time["7:00 PM"] is False
+
+
+def test_parses_category_seat_counts():
+    data = {
+        "venueName": "PVR: Palazzo",
+        "ShowTimes": [
+            {
+                "ShowTime": "6:00 PM",
+                "Categories": [{"PriceDesc": "Recliner", "SeatsAvail": 7}, {"PriceDesc": "Prime", "SeatsAvail": 0}],
+            }
+        ],
+    }
+    (show,) = extract_shows_for_theatre(data, "PVR: Palazzo")
+    assert show.categories == {"Recliner": 7, "Prime": 0}
+
+
+def test_extract_all_shows_returns_every_venue():
+    data = [
+        {"venueName": "A", "ShowTimes": [{"ShowTime": "1", "Status": "AVAILABLE"}]},
+        {"venueName": "B", "ShowTimes": [{"ShowTime": "2", "Status": "AVAILABLE"}]},
+    ]
+    assert {s.venue_name for s in extract_all_shows(data)} == {"A", "B"}
+    assert len(extract_shows(data, [])) == 2
+    assert [s.venue_name for s in extract_shows(data, ["a"])] == ["A"]
 
 
 def test_no_match_returns_empty_list():

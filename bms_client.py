@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
 import requests
-
-from constants import EVENT_CODE, REGION_CODE, THEATRE_NAME
 
 SHOWTIMES_URL = "https://in.bookmyshow.com/api/movies-data/showtimes-by-event"
 
@@ -45,9 +43,12 @@ class Show:
     date: str
     show_time: str
     available: bool
+    # seats available per price tier/category, e.g. {"Recliner": 12}.
+    # BMS's showtimes API exposes counts per category, not individual rows.
+    categories: dict[str, int] = field(default_factory=dict)
 
 
-def fetch_raw_showtimes(event_code: str = EVENT_CODE, region_code: str = REGION_CODE) -> dict:
+def fetch_raw_showtimes(event_code: str, region_code: str) -> dict:
     params = {
         "appCode": "MOBAND2",
         "appVersion": "14304",
@@ -97,6 +98,25 @@ def _is_available(showtime: dict) -> bool:
     return status not in ("",) or bool(status)
 
 
+CATEGORY_NAME_KEYS = ("PriceDesc", "priceDesc", "CategoryName", "categoryName", "name", "Name")
+
+
+def _parse_categories(showtime: dict) -> dict[str, int]:
+    result: dict[str, int] = {}
+    categories = showtime.get("Categories") or showtime.get("categories") or []
+    for i, category in enumerate(categories):
+        if not isinstance(category, dict):
+            continue
+        seats = category.get("SeatsAvail")
+        if seats is None:
+            seats = category.get("seatsAvail", category.get("Available"))
+        if not isinstance(seats, (int, float)):
+            continue
+        name = next((category[k] for k in CATEGORY_NAME_KEYS if isinstance(category.get(k), str)), None)
+        result[name or f"category-{i}"] = int(seats)
+    return result
+
+
 def _parse_showtime(venue_name: str, showtime: dict) -> Show:
     show_time = showtime.get("ShowTime") or showtime.get("showTime") or showtime.get("time") or ""
     date = showtime.get("ShowDate") or showtime.get("date") or ""
@@ -112,39 +132,63 @@ def _parse_showtime(venue_name: str, showtime: dict) -> Show:
         date=str(date),
         show_time=str(show_time),
         available=_is_available(showtime),
+        categories=_parse_categories(showtime),
     )
 
 
-def extract_shows_for_theatre(data: dict, theatre_name: str = THEATRE_NAME) -> list[Show]:
-    theatre_name_lower = theatre_name.lower()
+def _extract(data: dict, venue_matches) -> list[Show]:
     shows: list[Show] = []
-
     for node in _walk(data):
         venue_name = next(
             (node[key] for key in VENUE_NAME_KEYS if isinstance(node.get(key), str)),
             None,
         )
-        if not venue_name or theatre_name_lower not in venue_name.lower():
+        if not venue_name or not venue_matches(venue_name.lower()):
             continue
 
         for key in SHOWTIME_LIST_KEYS:
             showtime_list = node.get(key)
             if isinstance(showtime_list, list):
                 shows.extend(_parse_showtime(venue_name, st) for st in showtime_list if isinstance(st, dict))
-
     return shows
+
+
+def extract_shows_for_theatre(data: dict, theatre_name: str) -> list[Show]:
+    needle = theatre_name.lower()
+    return _extract(data, lambda venue: needle in venue)
+
+
+def extract_all_shows(data: dict) -> list[Show]:
+    """Every venue's shows — used when a watch lists no specific theatres
+    (i.e. watch the whole city)."""
+    return _extract(data, lambda venue: True)
+
+
+def extract_shows(data: dict, theatres: list[str]) -> list[Show]:
+    """Shows for the listed theatres, or for every venue if none are listed.
+    De-duplicated by show id in case theatre names overlap."""
+    if not theatres:
+        return extract_all_shows(data)
+    unique: dict[str, Show] = {}
+    for theatre in theatres:
+        for show in extract_shows_for_theatre(data, theatre):
+            unique.setdefault(show.id, show)
+    return list(unique.values())
 
 
 if __name__ == "__main__":
     # Debug helper: `python bms_client.py` fetches the raw response and
     # saves it so you can inspect the real field names and adjust the
     # *_KEYS lists / _is_available above if BookMyShow's schema differs.
-    raw = fetch_raw_showtimes()
-    out_path = Path("raw_showtimes_dump.json")
-    out_path.write_text(json.dumps(raw, indent=2))
-    print(f"Saved raw response to {out_path}", file=sys.stderr)
+    from config import load_watches
 
-    shows = extract_shows_for_theatre(raw)
-    print(f"Found {len(shows)} show(s) for {THEATRE_NAME!r}:")
-    for show in shows:
-        print(f"  {show.date} {show.show_time}  available={show.available}")
+    for watch in load_watches():
+        raw = fetch_raw_showtimes(watch.event_code, watch.region_code)
+        out_path = Path(f"raw_showtimes_dump_{watch.event_code}.json")
+        out_path.write_text(json.dumps(raw, indent=2))
+        print(f"Saved raw response to {out_path}", file=sys.stderr)
+
+        shows = extract_shows(raw, watch.theatres)
+        print(f"{watch.movie} / {watch.city}: found {len(shows)} show(s):")
+        for show in shows:
+            print(f"  {show.venue_name} {show.date} {show.show_time}  available={show.available}  {show.categories}")
