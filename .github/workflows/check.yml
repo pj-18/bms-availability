@@ -1,0 +1,71 @@
+name: BMS availability check
+
+on:
+  schedule:
+    # Safety net only: the job loops for ~5h50m and re-dispatches itself, so
+    # this just revives it if that chain ever breaks. Concurrency (below)
+    # keeps these from overlapping the long-running job.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+# Only one checker at a time (no duplicate emails). A newly triggered run
+# waits for the current one instead of cancelling it.
+concurrency:
+  group: bms-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # lets the final step re-dispatch this workflow
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # GitHub-hosted runners are hard-killed at 6 hours.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      # state.json (shows already seen) must survive across runs.
+      - name: Restore state.json
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: bms-state-${{ github.run_id }}
+          restore-keys: |
+            bms-state-
+
+      # Refreshes every LOOP_INTERVAL_SECONDS for up to LOOP_MAX_SECONDS
+      # (5h50m, leaving headroom under the 6h cap), logging uptime each
+      # iteration and writing the total to the job summary.
+      - name: Run check loop
+        env:
+          LOOP_INTERVAL_SECONDS: "60"
+          LOOP_MAX_SECONDS: "21000"
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python checker.py
+
+      - name: Save state.json
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: bms-state-${{ github.run_id }}
+
+      # Only after a clean finish (not on failure/cancel, to avoid a
+      # red-run loop or restarting something the user just cancelled).
+      - name: Start the next run
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run check.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
